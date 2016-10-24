@@ -13,33 +13,46 @@
 # - MDB_FDATASYNC
 # - MDB_FDATASYNC_WORKS
 # - MDB_USE_PWRITEV
+# - MDB_USE_ROBUST
 #
 # There may be other macros in mdb.c of interest. You should
 # read mdb.c before changing any of them.
 #
 CC	= gcc
+AR	= ar
 W	= -W -Wall -Wno-unused-parameter -Wbad-function-cast -Wuninitialized
 THREADS = -pthread
 OPT = -O2 -g
 CFLAGS	= $(THREADS) $(OPT) $(W) $(XCFLAGS)
-LDLIBS	=
-SOLIBS	=
+LDLIBS	= # -lntdll # Windows needs ntdll
+SOLIBS	= # -lntdll
+SOEXT	= .so
 prefix	= /usr/local
+exec_prefix = $(prefix)
+bindir = $(exec_prefix)/bin
+libdir = $(exec_prefix)/lib
+includedir = $(prefix)/include
+datarootdir = $(prefix)/share
+mandir = $(datarootdir)/man
 
 ########################################################################
 
 IHDRS	= lmdb.h
-ILIBS	= liblmdb.a liblmdb.so
+ILIBS	= liblmdb.a liblmdb$(SOEXT)
 IPROGS	= mdb_stat mdb_copy mdb_dump mdb_load
 IDOCS	= mdb_stat.1 mdb_copy.1 mdb_dump.1 mdb_load.1
 PROGS	= $(IPROGS) mtest mtest2 mtest3 mtest4 mtest5
 all:	$(ILIBS) $(PROGS)
 
 install: $(ILIBS) $(IPROGS) $(IHDRS)
-	for f in $(IPROGS); do cp $$f $(DESTDIR)$(prefix)/bin; done
-	for f in $(ILIBS); do cp $$f $(DESTDIR)$(prefix)/lib; done
-	for f in $(IHDRS); do cp $$f $(DESTDIR)$(prefix)/include; done
-	for f in $(IDOCS); do cp $$f $(DESTDIR)$(prefix)/man/man1; done
+	mkdir -p $(DESTDIR)$(bindir)
+	mkdir -p $(DESTDIR)$(libdir)
+	mkdir -p $(DESTDIR)$(includedir)
+	mkdir -p $(DESTDIR)$(mandir)/man1
+	for f in $(IPROGS); do cp $$f $(DESTDIR)$(bindir); done
+	for f in $(ILIBS); do cp $$f $(DESTDIR)$(libdir); done
+	for f in $(IHDRS); do cp $$f $(DESTDIR)$(includedir); done
+	for f in $(IDOCS); do cp $$f $(DESTDIR)$(mandir)/man1; done
 
 clean:
 	rm -rf $(PROGS) *.[ao] *.[ls]o *~ testdb
@@ -49,9 +62,9 @@ test:	all
 	./mtest && ./mdb_stat testdb
 
 liblmdb.a:	mdb.o midl.o
-	ar rs $@ mdb.o midl.o
+	$(AR) rs $@ mdb.o midl.o
 
-liblmdb.so:	mdb.lo midl.lo
+liblmdb$(SOEXT):	mdb.lo midl.lo
 #	$(CC) $(LDFLAGS) -pthread -shared -Wl,-Bsymbolic -o $@ mdb.o midl.o $(SOLIBS)
 	$(CC) $(LDFLAGS) -pthread -shared -o $@ mdb.lo midl.lo $(SOLIBS)
 
