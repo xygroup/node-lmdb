@@ -1,8 +1,23 @@
 {
-  "name": "lmdb",
+  "name": "node-lmdb",
   "description": "Node binding for LMDB, the Lightning Memory-Mapped Database",
   "author": "Timur Kristóf <venemo@fedoraproject.org>",
-  "contributors": ["Erich Ocean <erich@xygroup.co>"],
+  "contributors": [
+    "Timur Kristóf",
+    "Erich Ocean",
+    "Braydon Fuller",
+    "Andreas Holstenson (aholstenson)",
+    "antoinevw",
+    "b-ono",
+    "da77a",
+    "John Hewson (jahewson)",
+    "Jeffrey Esquivel S. (jeffesquivels)",
+    "Stefan Thomas (justmoon)",
+    "Matt-Esch",
+    "Oliver Zhou (oliverzy)",
+    "Pascal Berrang (paberr)",
+    "Raymond Neilson (rneilson)"
+  ],
   "license": "MIT",
   "keywords": [
     "lmdb",
@@ -11,11 +26,25 @@
     "lightning",
     "binding"
   ],
-  "repository": "https://github.com/xygroup/node-lmdb",
-  "version": "0.4.0",
-  "main": "./build/Release/node-lmdb",
+  "repository": "https://github.com/Venemo/node-lmdb",
+  "version": "0.6.0",
+  "main": "./index.js",
+  "scripts": {
+    "test": "./node_modules/.bin/mocha test/**.test.js --recursive",
+    "benchmark": "node ./benchmark/index.js"
+  },
   "gypfile": true,
   "dependencies": {
-    "nan": "^2.0.9"
+    "bindings": "^1.2.1",
+    "nan": "^2.10.0"
+  },
+  "devDependencies": {
+    "benchmark": "^2.1.4",
+    "chai": "^3.5.0",
+    "mkdirp": "^0.5.1",
+    "mocha": "^3.3.0",
+    "node-gyp": "^3.6.0",
+    "rimraf": "^2.6.1",
+    "jshint": "^2.9.4"
   }
 }

@@ -1,6 +1,6 @@
 
 // This file is part of node-lmdb, the Node.js binding for lmdb
-// Copyright (c) 2013 Timur Kristóf
+// Copyright (c) 2013-2017 Timur Kristóf
 // Licensed to you under the terms of the MIT license
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -24,17 +24,36 @@
 #ifndef NODE_LMDB_H
 #define NODE_LMDB_H
 
+#include <vector>
+#include <algorithm>
 #include <v8.h>
 #include <node.h>
 #include <node_buffer.h>
 #include <nan.h>
 #include <uv.h>
-#include "../libraries/liblmdb/lmdb.h"
-
-#define NanReturnThis() return info.GetReturnValue().Set(info.This())
+#include "lmdb.h"
 
 using namespace v8;
 using namespace node;
+
+enum class NodeLmdbKeyType {
+
+    // Invalid key (used internally by node-lmdb)
+    InvalidKey = -1,
+    
+    // Default key (used internally by node-lmdb)
+    DefaultKey = 0,
+
+    // UCS-2/UTF-16 with zero terminator - Appears to V8 as string
+    StringKey = 1,
+    
+    // LMDB fixed size integer key with 32 bit keys - Appearts to V8 as an Uint32
+    Uint32Key = 2,
+    
+    // LMDB default key format - Appears to V8 as node::Buffer
+    BinaryKey = 3,
+
+};
 
 // Exports misc stuff to the module
 void setupExportMisc(Handle<Object> exports);
@@ -42,16 +61,29 @@ void setupExportMisc(Handle<Object> exports);
 // Helper callback
 typedef void (*argtokey_callback_t)(MDB_val &key);
 
-void consoleLog(Handle<Value> val);
+void consoleLog(Local<Value> val);
 void consoleLog(const char *msg);
 void consoleLogN(int n);
 void setFlagFromValue(int *flags, int flag, const char *name, bool defaultValue, Local<Object> options);
-argtokey_callback_t argToKey(const Handle<Value> &val, MDB_val &key, bool keyIsUint32);
-Handle<Value> keyToHandle(MDB_val &key, bool keyIsUint32);
-Handle<Value> valToString(MDB_val &data);
-Handle<Value> valToBinary(MDB_val &data);
-Handle<Value> valToNumber(MDB_val &data);
-Handle<Value> valToBoolean(MDB_val &data);
+argtokey_callback_t argToKey(const Local<Value> &val, MDB_val &key, NodeLmdbKeyType keyType, bool &isValid);
+NodeLmdbKeyType inferAndValidateKeyType(const Local<Value> &key, const Local<Value> &options, NodeLmdbKeyType dbiKeyType, bool &isValid);
+NodeLmdbKeyType inferKeyType(const Local<Value> &val);
+NodeLmdbKeyType keyTypeFromOptions(const Local<Value> &val, NodeLmdbKeyType defaultKeyType = NodeLmdbKeyType::StringKey);
+Local<Value> keyToHandle(MDB_val &key, NodeLmdbKeyType keyType);
+
+Local<Value> valToString(MDB_val &data);
+Local<Value> valToStringUnsafe(MDB_val &data);
+Local<Value> valToBinary(MDB_val &data);
+Local<Value> valToBinaryUnsafe(MDB_val &data);
+Local<Value> valToNumber(MDB_val &data);
+Local<Value> valToBoolean(MDB_val &data);
+
+void throwLmdbError(int rc);
+
+class TxnWrap;
+class DbiWrap;
+class EnvWrap;
+class CursorWrap;
 
 /*
     `Env`
@@ -62,10 +94,17 @@ class EnvWrap : public Nan::ObjectWrap {
 private:
     // The wrapped object
     MDB_env *env;
+    // Current write transaction
+    TxnWrap *currentWriteTxn;
+    // List of open read transactions
+    std::vector<TxnWrap*> readTxns;
     // Constructor for TxnWrap
     static Nan::Persistent<Function> txnCtor;
     // Constructor for DbiWrap
     static Nan::Persistent<Function> dbiCtor;
+    
+    // Cleans up stray transactions
+    void cleanupStrayTxns();
 
     friend class TxnWrap;
     friend class DbiWrap;
@@ -82,6 +121,16 @@ public:
         (Wrapper for `mdb_env_create`)
     */
     static NAN_METHOD(ctor);
+    
+    /*
+        Gets statistics about the database environment.
+    */
+    static NAN_METHOD(stat);
+    
+    /*
+        Gets information about the database environment.
+    */
+    static NAN_METHOD(info);
 
     /*
         Opens the database environment with the specified options. The options will be used to configure the environment before opening it.
@@ -99,6 +148,16 @@ public:
         * path: path to the database environment
     */
     static NAN_METHOD(open);
+
+    /*
+        Resizes the maximal size of the memory map. It may be called if no transactions are active in this process.
+        (Wrapper for `mdb_env_set_mapsize`)
+
+        Parameters:
+
+        * maximal size of the memory map (the full environment) in bytes (default is 10485760 bytes)
+    */
+    static NAN_METHOD(resize);
 
     /*
         Closes the database environment.
@@ -130,6 +189,7 @@ public:
 
         Possible options are:
 
+        * name: the name of the database (or null to use the unnamed database)
         * create: if true, the database will be created if it doesn't exist
         * keyIsUint32: if true, keys are treated as 32-bit unsigned integers
         * dupSort: if true, the database can hold multiple items with the same key
@@ -164,10 +224,18 @@ private:
     // Reference to the MDB_env of the wrapped MDB_txn
     MDB_env *env;
 
+    // Environment wrapper of the current transaction
     EnvWrap *ew;
+    
+    // Flags used with mdb_txn_begin
+    unsigned int flags;
+    
+    // Remove the current TxnWrap from its EnvWrap
+    void removeFromEnvWrap();
 
     friend class CursorWrap;
     friend class DbiWrap;
+    friend class EnvWrap;
 
 public:
     TxnWrap(MDB_env *env, MDB_txn *txn);
@@ -177,7 +245,7 @@ public:
     static NAN_METHOD(ctor);
 
     // Helper for all the get methods (not exposed)
-    static Nan::NAN_METHOD_RETURN_TYPE getCommon(Nan::NAN_METHOD_ARGS_TYPE info, Handle<Value> (*successFunc)(MDB_val&));
+    static Nan::NAN_METHOD_RETURN_TYPE getCommon(Nan::NAN_METHOD_ARGS_TYPE info, Local<Value> (*successFunc)(MDB_val&));
 
     // Helper for all the put methods (not exposed)
     static Nan::NAN_METHOD_RETURN_TYPE putCommon(Nan::NAN_METHOD_ARGS_TYPE info, void (*fillFunc)(Nan::NAN_METHOD_ARGS_TYPE info, MDB_val&), void (*freeFunc)(MDB_val&));
@@ -208,7 +276,7 @@ public:
 
     /*
         Gets string data (JavaScript string type) associated with the given key from a database. You need to open a database in the environment to use this.
-        This method is zero-copy and the return value can only be used until the next put operation or until the transaction is committed or aborted.
+        This method is not zero-copy and the return value will usable as long as there is a reference to it.
         (Wrapper for `mdb_get`)
 
         Parameters:
@@ -217,6 +285,30 @@ public:
         * key for which the value is retrieved
     */
     static NAN_METHOD(getString);
+
+    /*
+        Gets string data (JavaScript string type) associated with the given key from a database. You need to open a database in the environment to use this.
+        This method is zero-copy and the return value can only be used until the next put operation or until the transaction is committed or aborted.
+        (Wrapper for `mdb_get`)
+
+        Parameters:
+
+        * database instance created with calling `openDbi()` on an `Env` instance
+        * key for which the value is retrieved
+    */
+    static NAN_METHOD(getStringUnsafe);
+
+    /*
+        Gets binary data (Node.js Buffer) associated with the given key from a database. You need to open a database in the environment to use this.
+        This method is not zero-copy and the return value will usable as long as there is a reference to it.
+        (Wrapper for `mdb_get`)
+
+        Parameters:
+
+        * database instance created with calling `openDbi()` on an `Env` instance
+        * key for which the value is retrieved
+    */
+    static NAN_METHOD(getBinary);
 
     /*
         Gets binary data (Node.js Buffer) associated with the given key from a database. You need to open a database in the environment to use this.
@@ -228,7 +320,7 @@ public:
         * database instance created with calling `openDbi()` on an `Env` instance
         * key for which the value is retrieved
     */
-    static NAN_METHOD(getBinary);
+    static NAN_METHOD(getBinaryUnsafe);
 
     /*
         Gets number data (JavaScript number type) associated with the given key from a database. You need to open a database in the environment to use this.
@@ -319,14 +411,18 @@ public:
 */
 class DbiWrap : public Nan::ObjectWrap {
 private:
-    // Stores whether keys should be treated as uint32_t
-    bool keyIsUint32;
+    // Tells how keys should be treated
+    NodeLmdbKeyType keyType;
+    // Stores flags set when opened
+    int flags;
     // The wrapped object
     MDB_dbi dbi;
     // Reference to the MDB_env of the wrapped MDB_dbi
     MDB_env *env;
-
+    // The EnvWrap object of the current Dbi
     EnvWrap *ew;
+    // Whether the Dbi was opened successfully
+    bool isOpen;
 
     friend class TxnWrap;
     friend class CursorWrap;
@@ -367,15 +463,23 @@ public:
     (Wrapper for `MDB_cursor`)
 */
 class CursorWrap : public Nan::ObjectWrap {
+
 private:
+
     // The wrapped object
     MDB_cursor *cursor;
-    // Stores whether keys should be treated as uint32_t
-    bool keyIsUint32;
+    // Stores how key is represented
+    NodeLmdbKeyType keyType;
     // Key/data pair where the cursor is at
     MDB_val key, data;
+    // Free function for the current key
+    argtokey_callback_t freeKey;
+    
     DbiWrap *dw;
     TxnWrap *tw;
+    
+    template<size_t keyIndex, size_t optionsIndex>
+    friend argtokey_callback_t cursorArgToKey(CursorWrap* cw, Nan::NAN_METHOD_ARGS_TYPE info, MDB_val &key, bool &keyIsValid);
 
 public:
     CursorWrap(MDB_cursor *cursor);
@@ -409,16 +513,17 @@ public:
     // Helper method for getters (not exposed)
     static Nan::NAN_METHOD_RETURN_TYPE getCommon(
         Nan::NAN_METHOD_ARGS_TYPE info, MDB_cursor_op op,
-        void (*setKey)(CursorWrap* cw, Nan::NAN_METHOD_ARGS_TYPE info, MDB_val&),
+        argtokey_callback_t (*setKey)(CursorWrap* cw, Nan::NAN_METHOD_ARGS_TYPE info, MDB_val&, bool&),
         void (*setData)(CursorWrap* cw, Nan::NAN_METHOD_ARGS_TYPE info, MDB_val&),
         void (*freeData)(CursorWrap* cw, Nan::NAN_METHOD_ARGS_TYPE info, MDB_val&),
-        Handle<Value> (*convertFunc)(MDB_val &data));
+        Local<Value> (*convertFunc)(MDB_val &data));
 
     // Helper method for getters (not exposed)
     static Nan::NAN_METHOD_RETURN_TYPE getCommon(Nan::NAN_METHOD_ARGS_TYPE info, MDB_cursor_op op);
 
     /*
         Gets the current key-data pair that the cursor is pointing to. Returns the current key.
+        This method is not zero-copy and the return value will usable as long as there is a reference to it.
         (Wrapper for `mdb_cursor_get`)
 
         Parameters:
@@ -429,6 +534,17 @@ public:
 
     /*
         Gets the current key-data pair that the cursor is pointing to. Returns the current key.
+        This method is zero-copy and the value can only be used until the next put operation or until the transaction is committed or aborted.
+        (Wrapper for `mdb_cursor_get`)
+
+        Parameters:
+
+        * Callback that accepts the key and value
+    */
+    static NAN_METHOD(getCurrentStringUnsafe);
+
+    /*
+        Gets the current key-data pair that the cursor is pointing to. Returns the current key.
         (Wrapper for `mdb_cursor_get`)
 
         Parameters:
@@ -436,6 +552,18 @@ public:
         * Callback that accepts the key and value
     */
     static NAN_METHOD(getCurrentBinary);
+
+
+    /*
+        Gets the current key-data pair with zero-copy that the cursor is pointing to. Returns the current key.
+        This method is zero-copy and the value can only be used until the next put operation or until the transaction is committed or aborted.
+        (Wrapper for `mdb_cursor_get`)
+
+        Parameters:
+
+        * Callback that accepts the key and value
+    */
+    static NAN_METHOD(getCurrentBinaryUnsafe);
 
     /*
         Gets the current key-data pair that the cursor is pointing to. Returns the current key.

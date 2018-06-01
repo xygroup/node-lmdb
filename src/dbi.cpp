@@ -1,6 +1,6 @@
 
 // This file is part of node-lmdb, the Node.js binding for lmdb
-// Copyright (c) 2013 Timur Kristóf
+// Copyright (c) 2013-2017 Timur Kristóf
 // Licensed to you under the terms of the MIT license
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -22,6 +22,7 @@
 // THE SOFTWARE.
 
 #include "node-lmdb.h"
+#include <cstdio>
 
 using namespace v8;
 using namespace node;
@@ -31,6 +32,9 @@ void setFlagFromValue(int *flags, int flag, const char *name, bool defaultValue,
 DbiWrap::DbiWrap(MDB_env *env, MDB_dbi dbi) {
     this->env = env;
     this->dbi = dbi;
+    this->keyType = NodeLmdbKeyType::StringKey;
+    this->isOpen = false;
+    this->ew = nullptr;
 }
 
 DbiWrap::~DbiWrap() {
@@ -59,12 +63,18 @@ NAN_METHOD(DbiWrap::ctor) {
     MDB_txn *txn;
     int rc;
     int flags = 0;
-    int keyIsUint32 = 0;
+    int txnFlags = 0;
     Local<String> name;
+    bool nameIsNull = false;
+    NodeLmdbKeyType keyType = NodeLmdbKeyType::StringKey;
+    bool needsTransaction = true;
+    bool isOpen = false;
 
     EnvWrap *ew = Nan::ObjectWrap::Unwrap<EnvWrap>(info[0]->ToObject());
+    
     if (info[1]->IsObject()) {
         Local<Object> options = info[1]->ToObject();
+        nameIsNull = options->Get(Nan::New<String>("name").ToLocalChecked())->IsNull();
         name = options->Get(Nan::New<String>("name").ToLocalChecked())->ToString();
 
         // Get flags from options
@@ -77,59 +87,95 @@ NAN_METHOD(DbiWrap::ctor) {
         setFlagFromValue(&flags, MDB_INTEGERDUP, "integerDup", false, options);
         setFlagFromValue(&flags, MDB_REVERSEDUP, "reverseDup", false, options);
         setFlagFromValue(&flags, MDB_CREATE, "create", false, options);
+        setFlagFromValue(&flags, MDB_INTEGERKEY, "bufferKeyIsInteger", false, options);
 
         // TODO: wrap mdb_set_compare
         // TODO: wrap mdb_set_dupsort
 
-        // See if key is uint32_t
-        setFlagFromValue(&keyIsUint32, 1, "keyIsUint32", false, options);
-        if (keyIsUint32) {
+        keyType = keyTypeFromOptions(options);
+        if (keyType == NodeLmdbKeyType::InvalidKey) {
+            // NOTE: Error has already been thrown inside keyTypeFromOptions
+            return;
+        }
+        
+        if (keyType == NodeLmdbKeyType::Uint32Key) {
             flags |= MDB_INTEGERKEY;
+        }
+
+        // Set flags for txn used to open database
+        Local<Value> create = options->Get(Nan::New<String>("create").ToLocalChecked());
+        if (create->IsBoolean() ? !create->BooleanValue() : true) {
+            txnFlags |= MDB_RDONLY;
+        }
+        
+        auto txnObj = options->Get(Nan::New<String>("txn").ToLocalChecked());
+        if (!txnObj->IsNull() && !txnObj->IsUndefined() && txnObj->IsObject()) {
+            TxnWrap *tw = Nan::ObjectWrap::Unwrap<TxnWrap>(txnObj->ToObject());
+            needsTransaction = false;
+            txn = tw->txn;
         }
     }
     else {
         return Nan::ThrowError("Invalid parameters.");
     }
 
-    // Open transaction
-    rc = mdb_txn_begin(ew->env, nullptr, 0, &txn);
-    if (rc != 0) {
-        mdb_txn_abort(txn);
-        return Nan::ThrowError(mdb_strerror(rc));
+    if (needsTransaction) {
+        // Open transaction
+        rc = mdb_txn_begin(ew->env, nullptr, txnFlags, &txn);
+        if (rc != 0) {
+            // No need to call mdb_txn_abort, because mdb_txn_begin already cleans up after itself
+            return throwLmdbError(rc);
+        }
     }
 
     // Open database
-    rc = mdb_dbi_open(txn, *String::Utf8Value(name), flags, &dbi);
+    // NOTE: nullptr in place of the name means using the unnamed database.
+    rc = mdb_dbi_open(txn, nameIsNull ? nullptr : *String::Utf8Value(name), flags, &dbi);
     if (rc != 0) {
-        mdb_txn_abort(txn);
-        return Nan::ThrowError(mdb_strerror(rc));
+        if (needsTransaction) {
+            mdb_txn_abort(txn);
+        }
+        return throwLmdbError(rc);
+    }
+    else {
+        isOpen = true;
     }
 
-    // Commit transaction
-    rc = mdb_txn_commit(txn);
-    if (rc != 0) {
-        return Nan::ThrowError(mdb_strerror(rc));
+    if (needsTransaction) {
+        // Commit transaction
+        rc = mdb_txn_commit(txn);
+        if (rc != 0) {
+            return throwLmdbError(rc);
+        }
     }
 
     // Create wrapper
     DbiWrap* dw = new DbiWrap(ew->env, dbi);
-    dw->ew = ew;
-    dw->ew->Ref();
-    dw->keyIsUint32 = keyIsUint32;
+    if (isOpen) {
+        dw->ew = ew;
+        dw->ew->Ref();
+    }
+    dw->keyType = keyType;
+    dw->flags = flags;
+    dw->isOpen = isOpen;
     dw->Wrap(info.This());
 
-    NanReturnThis();
+    return info.GetReturnValue().Set(info.This());
 }
 
 NAN_METHOD(DbiWrap::close) {
     Nan::HandleScope scope;
 
     DbiWrap *dw = Nan::ObjectWrap::Unwrap<DbiWrap>(info.This());
-    mdb_dbi_close(dw->env, dw->dbi);
-    dw->ew->Unref();
-    dw->ew = nullptr;
-
-    return;
+    if (dw->isOpen) {
+        mdb_dbi_close(dw->env, dw->dbi);
+        dw->isOpen = false;
+        dw->ew->Unref();
+        dw->ew = nullptr;
+    }
+    else {
+        return Nan::ThrowError("The Dbi is not open, you can't close it.");
+    }
 }
 
 NAN_METHOD(DbiWrap::drop) {
@@ -139,36 +185,60 @@ NAN_METHOD(DbiWrap::drop) {
     int del = 1;
     int rc;
     MDB_txn *txn;
-
-    // Check if the database should be deleted
-    if (info.Length() == 2 && info[1]->IsObject()) {
-        Handle<Object> options = info[1]->ToObject();
-        Handle<Value> opt = options->Get(Nan::New<String>("justFreePages").ToLocalChecked());
-        del = opt->IsBoolean() ? !(opt->BooleanValue()) : 1;
+    bool needsTransaction = true;
+    
+    if (!dw->isOpen) {
+        return Nan::ThrowError("The Dbi is not open, you can't drop it.");
     }
 
-    // Begin transaction
-    rc = mdb_txn_begin(dw->env, nullptr, 0, &txn);
-    if (rc != 0) {
-        return Nan::ThrowError(mdb_strerror(rc));
+    // Check if the database should be deleted
+    if (info.Length() == 1 && info[0]->IsObject()) {
+        Handle<Object> options = info[0]->ToObject();
+        
+        // Just free pages
+        Local<Value> opt = options->Get(Nan::New<String>("justFreePages").ToLocalChecked());
+        del = opt->IsBoolean() ? !(opt->BooleanValue()) : 1;
+        
+        // User-supplied txn
+        auto txnObj = options->Get(Nan::New<String>("txn").ToLocalChecked());
+        if (!txnObj->IsNull() && !txnObj->IsUndefined() && txnObj->IsObject()) {
+            TxnWrap *tw = Nan::ObjectWrap::Unwrap<TxnWrap>(txnObj->ToObject());
+            needsTransaction = false;
+            txn = tw->txn;
+        }
+    }
+
+    if (needsTransaction) {
+        // Begin transaction
+        rc = mdb_txn_begin(dw->env, nullptr, 0, &txn);
+        if (rc != 0) {
+            return throwLmdbError(rc);
+        }
     }
 
     // Drop database
     rc = mdb_drop(txn, dw->dbi, del);
     if (rc != 0) {
-        return Nan::ThrowError(mdb_strerror(rc));
+        if (needsTransaction) {
+            mdb_txn_abort(txn);
+        }
+        return throwLmdbError(rc);
     }
 
-    // Commit transaction
-    rc = mdb_txn_commit(txn);
-    if (rc != 0) {
-        return Nan::ThrowError(mdb_strerror(rc));
+    if (needsTransaction) {
+        // Commit transaction
+        rc = mdb_txn_commit(txn);
+        if (rc != 0) {
+            return throwLmdbError(rc);
+        }
     }
-
-    dw->ew->Unref();
-    dw->ew = nullptr;
-
-    return;
+    
+    // Only close database if del == 1
+    if (del == 1) {
+        dw->isOpen = false;
+        dw->ew->Unref();
+        dw->ew = nullptr;
+    }
 }
 
 NAN_METHOD(DbiWrap::stat) {
