@@ -1,5 +1,5 @@
 {
-  "name": "node-lmdb",
+  "name": "xygroup-node-lmdb",
   "description": "Node binding for LMDB, the Lightning Memory-Mapped Database",
   "author": "Timur Kristóf <venemo@fedoraproject.org>",
   "contributors": [
@@ -26,7 +26,7 @@
     "lightning",
     "binding"
   ],
-  "repository": "https://github.com/Venemo/node-lmdb",
+  "repository": "https://github.com/xygroup/node-lmdb",
   "version": "0.6.0",
   "main": "./index.js",
   "scripts": {
