@@ -87,6 +87,20 @@ NAN_METHOD(CursorWrap::ctor) {
     return info.GetReturnValue().Set(info.This());
 }
 
+NAN_METHOD(CursorWrap::count) {
+    Nan::HandleScope scope;
+
+    size_t countp;
+
+    CursorWrap *cw = Nan::ObjectWrap::Unwrap<CursorWrap>(info.This());
+    int rc = mdb_cursor_count(cw->cursor, &countp);
+    if (rc != 0) {
+        return throwLmdbError(rc);
+    }
+
+    return info.GetReturnValue().Set((uint32_t)countp);
+}
+
 NAN_METHOD(CursorWrap::close) {
     Nan::HandleScope scope;
 
@@ -356,6 +370,7 @@ void CursorWrap::setupExports(Handle<Object> exports) {
     cursorTpl->SetClassName(Nan::New<String>("Cursor").ToLocalChecked());
     cursorTpl->InstanceTemplate()->SetInternalFieldCount(1);
     // CursorWrap: Add functions to the prototype
+    cursorTpl->PrototypeTemplate()->Set(Nan::New<String>("count").ToLocalChecked(), Nan::New<FunctionTemplate>(CursorWrap::count));
     cursorTpl->PrototypeTemplate()->Set(Nan::New<String>("close").ToLocalChecked(), Nan::New<FunctionTemplate>(CursorWrap::close));
     cursorTpl->PrototypeTemplate()->Set(Nan::New<String>("getCurrentString").ToLocalChecked(), Nan::New<FunctionTemplate>(CursorWrap::getCurrentString));
     cursorTpl->PrototypeTemplate()->Set(Nan::New<String>("getCurrentStringUnsafe").ToLocalChecked(), Nan::New<FunctionTemplate>(CursorWrap::getCurrentStringUnsafe));

@@ -500,6 +500,19 @@ public:
     static NAN_METHOD(ctor);
 
     /*
+        Return count of duplicates for current key.
+
+        This call is only valid on databases that support sorted duplicate data items MDB_DUPSORT.
+        (Wrapper for `mdb_cursor_open`)
+
+        Parameters:
+
+        * Transaction object
+        * Database instance object
+    */
+    static NAN_METHOD(count);
+
+    /*
         Closes the cursor.
         (Wrapper for `mdb_cursor_close`)
 
