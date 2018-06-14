@@ -503,7 +503,7 @@ public:
         Return count of duplicates for current key.
 
         This call is only valid on databases that support sorted duplicate data items MDB_DUPSORT.
-        (Wrapper for `mdb_cursor_open`)
+        (Wrapper for `mdb_cursor_count`)
 
         Parameters:
 

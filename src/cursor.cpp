@@ -98,7 +98,7 @@ NAN_METHOD(CursorWrap::count) {
         return throwLmdbError(rc);
     }
 
-    return info.GetReturnValue().Set((uint32_t)countp);
+    return info.GetReturnValue().Set(New<v8::Uint32>((uint32_t)countp));
 }
 
 NAN_METHOD(CursorWrap::close) {
